@@ -1,12 +1,13 @@
 """
 Modelo de Buses para el Sistema de Gestión de Flota
 Define la estructura de datos para los vehículos de transporte
+Actualizado según normativas chilenas de transporte público
 """
 
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, Enum
 from sqlalchemy.sql import func
 import enum
-from ..core.database import Base
+from app.core.database import Base
 
 # Enumeraciones para estados y tipos
 class EstadoBus(str, enum.Enum):
@@ -19,18 +20,21 @@ class TipoCombustible(str, enum.Enum):
     DIESEL = "diesel"
     GASOLINA = "gasolina"
     GAS = "gas"
+    ELECTRICO = "electrico"
+    HIBRIDO = "hibrido"
 
 class Bus(Base):
     """
     Modelo para representar los buses de la flota
     Contiene toda la información técnica y administrativa de cada vehículo
+    Actualizado según normativas chilenas de transporte
     """
     __tablename__ = "buses"
 
     # Identificación primaria
     id = Column(Integer, primary_key=True, index=True, comment="ID único del bus")
-    patente = Column(String(10), unique=True, nullable=False, index=True, 
-                    comment="Patente del vehículo (ej: ABCD12)")
+    patente = Column(String(8), unique=True, nullable=False, index=True, 
+                    comment="Patente del vehículo formato chileno (6-8 caracteres)")
     codigo_interno = Column(String(50), unique=True, index=True,
                            comment="Código interno de la empresa")
 
@@ -38,14 +42,13 @@ class Bus(Base):
     marca = Column(String(100), nullable=False, comment="Marca del vehículo")
     modelo = Column(String(100), nullable=False, comment="Modelo del vehículo")
     año = Column(Integer, nullable=False, comment="Año de fabricación")
-    numero_chasis = Column(String(100), unique=True, comment="Número de chasis")
+    numero_chasis = Column(String(17), unique=True, comment="Número de chasis VIN (17 caracteres)")
     numero_motor = Column(String(100), comment="Número del motor")
 
     # Especificaciones técnicas
     tipo_combustible = Column(Enum(TipoCombustible), nullable=False, default=TipoCombustible.DIESEL,
                              comment="Tipo de combustible que usa")
-    capacidad_sentados = Column(Integer, nullable=False, comment="Número de asientos")
-    capacidad_parados = Column(Integer, default=0, comment="Capacidad de pasajeros de pie")
+    capacidad_sentados = Column(Integer, nullable=False, comment="Número de asientos (máximo 45 según normativa)")
     kilometraje_actual = Column(Integer, default=0, comment="Kilometraje actual del vehículo")
 
     # Información comercial
@@ -74,12 +77,6 @@ class Bus(Base):
     def __repr__(self):
         return f"<Bus(patente='{self.patente}', marca='{self.marca}', modelo='{self.modelo}')>"
 
-    # Método para obtener capacidad total
-    @property
-    def capacidad_total(self):
-        """Retorna la capacidad total de pasajeros (sentados + parados)"""
-        return self.capacidad_sentados + (self.capacidad_parados or 0)
-
     # Método para verificar si necesita mantenimiento
     def necesita_mantenimiento(self, kilometraje_limite=10000):
         """
@@ -90,6 +87,11 @@ class Bus(Base):
             return self.kilometraje_actual % kilometraje_limite < 1000
         return False
 
+    # Método para verificar capacidad válida según normativa
+    def capacidad_valida(self):
+        """Verifica que la capacidad esté dentro de los límites legales chilenos"""
+        return 1 <= self.capacidad_sentados <= 45
+
     # Método para obtener información resumida
     def info_basica(self):
         """Retorna información básica del bus como diccionario"""
@@ -99,5 +101,20 @@ class Bus(Base):
             "modelo": self.modelo,
             "año": self.año,
             "estado": self.estado.value,
-            "capacidad_total": self.capacidad_total
+            "capacidad_sentados": self.capacidad_sentados
         }
+
+   # Método para validar formato de patente chilena
+    def validar_patente_chilena(self):
+        """Valida que la patente cumpla con formatos chilenos"""
+        if not self.patente:
+            return False
+            
+        patente_limpia = self.patente.upper().replace('-', '').replace(' ', '')
+        
+        # Patente nueva (6 caracteres): 4 letras + 2 números
+        if len(patente_limpia) == 6:
+            return patente_limpia[:4].isalpha() and patente_limpia[4:].isdigit()
+        
+        # Patentes antiguas (7-8 caracteres) se consideran válidas
+        return 6 <= len(patente_limpia) <= 8
