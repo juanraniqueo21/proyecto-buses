@@ -12,15 +12,16 @@ from sqlalchemy.pool import StaticPool
 # URL de la base de datos desde variable de entorno o por defecto para desarrollo
 URL_BASE_DATOS = os.getenv(
     "DATABASE_URL", 
-    "postgresql://usuario_flota:contraseña_flota@localhost:5432/gestion_buses"
+    "postgresql://grupo_trabajo:grupo1234@localhost:5432/flota_buses?client_encoding=utf8&application_name=flota_buses"
 )
 
 # Crear motor de SQLAlchemy
 motor_bd = create_engine(
     URL_BASE_DATOS,
-    echo=True,  # Registra todas las consultas SQL (desactivar en producción)
-    pool_pre_ping=True,  # Verifica conexiones antes de usar
-    pool_recycle=300,  # Recicla conexiones cada 5 minutos
+    echo=True,
+    pool_pre_ping=True,
+    pool_recycle=300,
+    connect_args={"options": "-c timezone=utc -c client_encoding=utf8"}
 )
 
 # Crear clase SessionLocal
@@ -59,7 +60,8 @@ def verificar_conexion_bd():
     """
     try:
         bd = SesionLocal()
-        bd.execute("SELECT 1")
+        from sqlalchemy import text
+        bd.execute(text("SELECT 1"))
         bd.close()
         return True
     except Exception as e:

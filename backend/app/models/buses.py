@@ -6,6 +6,7 @@ Actualizado según normativas chilenas de transporte público
 
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, Enum
 from sqlalchemy.sql import func
+from decimal import Decimal
 import enum
 from app.core.database import Base
 
@@ -53,7 +54,7 @@ class Bus(Base):
 
     # Información comercial
     fecha_compra = Column(DateTime, comment="Fecha de compra del vehículo")
-    precio_compra = Column(Integer, comment="Precio de compra (en pesos chilenos)")
+    precio_compra = Column(Decimal(12,2), comment="Precio de compra en pesos")
     
     # Estado y operación
     estado = Column(Enum(EstadoBus), default=EstadoBus.ACTIVO, nullable=False,

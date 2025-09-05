@@ -6,6 +6,7 @@ Define la validación de datos de entrada y salida de la API
 from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel, Field, validator
+from decimal import Decimal
 from ..models.buses import EstadoBus, TipoCombustible
 
 # Schema base con campos comunes
@@ -23,7 +24,7 @@ class BusBase(BaseModel):
     capacidad_parados: Optional[int] = Field(default=0, ge=0, le=200, description="Capacidad de pasajeros de pie")
     kilometraje_actual: Optional[int] = Field(default=0, ge=0, description="Kilometraje actual del vehículo")
     fecha_compra: Optional[datetime] = Field(None, description="Fecha de compra del vehículo")
-    precio_compra: Optional[int] = Field(None, ge=0, description="Precio de compra en pesos")
+    precio_compra: Optional[Decimal] = Field(None, ge=0, description="Precio de compra")
     estado: EstadoBus = Field(default=EstadoBus.ACTIVO, description="Estado del bus")
     observaciones: Optional[str] = Field(None, max_length=1000, description="Observaciones adicionales")
 
