@@ -12,7 +12,15 @@ from sqlalchemy.pool import StaticPool
 # URL de la base de datos desde variable de entorno o por defecto para desarrollo
 URL_BASE_DATOS = os.getenv(
     "DATABASE_URL", 
-    "postgresql://grupo_trabajo:grupo1234@localhost:5432/flota_buses?client_encoding=utf8&application_name=flota_buses"
+    "postgresql://grupo_trabajo:grupo1234@localhost:5433/flota_buses"
+)
+
+
+motor_bd = create_engine(
+    URL_BASE_DATOS,
+    echo=True,
+    pool_pre_ping=True,
+    pool_recycle=300
 )
 
 # Crear motor de SQLAlchemy
@@ -67,3 +75,9 @@ def verificar_conexion_bd():
     except Exception as e:
         print(f"Conexión a base de datos falló: {e}")
         return False
+    
+def inicializar_bd():
+    """Inicializar tablas de la base de datos"""
+    from models.buses import Bus  # Sin 'app.'
+    from models.estados_tipos import EstadoBus, TipoCombustible  # Sin 'app.'
+    Base.metadata.create_all(bind=motor_bd)

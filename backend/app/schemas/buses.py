@@ -44,14 +44,6 @@ class BusBase(BaseModel):
             raise ValueError(f'El año no puede ser mayor a {año_actual + 1}')
         return v
 
-    @validator('capacidad_parados')
-    def validar_capacidades(cls, v, values):
-        """Validar que las capacidades sean coherentes"""
-        if 'capacidad_sentados' in values:
-            total = values['capacidad_sentados'] + (v or 0)
-            if total > 200:
-                raise ValueError('Capacidad total no puede exceder 200 pasajeros')
-        return v
 
 # Schema para crear un nuevo bus
 class BusCrear(BusBase):
@@ -70,10 +62,9 @@ class BusActualizar(BaseModel):
     numero_motor: Optional[str] = Field(None, max_length=100)
     tipo_combustible: Optional[TipoCombustible] = None
     capacidad_sentados: Optional[int] = Field(None, gt=0, le=100)
-    capacidad_parados: Optional[int] = Field(None, ge=0, le=200)
     kilometraje_actual: Optional[int] = Field(None, ge=0)
     fecha_compra: Optional[datetime] = None
-    precio_compra: Optional[int] = Field(None, ge=0)
+    precio_compra: Optional[Decimal] = Field(None, ge=0)
     estado: Optional[EstadoBus] = None
     observaciones: Optional[str] = Field(None, max_length=1000)
 
@@ -110,7 +101,6 @@ class Bus(BusBase):
                 "numero_motor": "OM926LA123456",
                 "tipo_combustible": "diesel",
                 "capacidad_sentados": 45,
-                "capacidad_parados": 20,
                 "capacidad_total": 65,
                 "kilometraje_actual": 85000,
                 "fecha_compra": "2020-01-15T00:00:00",

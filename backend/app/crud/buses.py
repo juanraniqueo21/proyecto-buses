@@ -1,194 +1,248 @@
 """
-Operaciones CRUD (Create, Read, Update, Delete) para el modelo Bus
-Sistema de Gestión de Flota de Buses
+Repository Pattern para operaciones CRUD del modelo Bus
+Actualizado para trabajar con tablas normalizadas y foreign keys
 """
 
 from typing import List, Optional
-from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import and_, or_
+from models.buses import Bus
 
-from app.models.buses import Bus
-from app.schemas.buses import BusCrear, BusActualizar
+import sys
+from pathlib import Path
 
-class CRUDBus:
-    """Clase para operaciones CRUD del modelo Bus"""
+# Agregar el directorio raíz al path
+sys.path.append(str(Path(__file__).parent.parent))
 
-    def crear_bus(self, db: Session, bus_data: BusCrear) -> Bus:
-        """
-        Crear un nuevo bus en la base de datos
-        """
-        # Convertir schema a diccionario
-        bus_dict = bus_data.dict()
-        
-        # Crear instancia del modelo
-        db_bus = Bus(**bus_dict)
-        
-        # Guardar en base de datos
-        db.add(db_bus)
-        db.commit()
-        db.refresh(db_bus)
-        
+from models.estados_tipos import EstadoBus, TipoCombustible
+from schemas.buses import BusCrear, BusActualizar
+
+
+class BusRepository:
+    """Repository para operaciones de acceso a datos de Bus"""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def find_all_with_details(self, skip: int = 0, limit: int = 50) -> List[Bus]:
+        """Obtener todos los buses con información de estado y combustible"""
+        return self.db.query(Bus)\
+            .options(joinedload(Bus.estado), joinedload(Bus.tipo_combustible))\
+            .filter(Bus.esta_activo == True)\
+            .offset(skip)\
+            .limit(limit)\
+            .all()
+
+    def find_by_id(self, bus_id: int) -> Optional[Bus]:
+        """Buscar bus por ID con información completa"""
+        return self.db.query(Bus)\
+            .options(joinedload(Bus.estado), joinedload(Bus.tipo_combustible))\
+            .filter(and_(Bus.id == bus_id, Bus.esta_activo == True))\
+            .first()
+
+    def find_by_patente(self, patente: str) -> Optional[Bus]:
+        """Buscar bus por patente"""
+        patente_limpia = patente.upper().replace('-', '').replace(' ', '')
+        return self.db.query(Bus)\
+            .options(joinedload(Bus.estado), joinedload(Bus.tipo_combustible))\
+            .filter(and_(Bus.patente == patente_limpia, Bus.esta_activo == True))\
+            .first()
+
+    def find_by_estado_codigo(self, codigo_estado: str) -> List[Bus]:
+        """Buscar buses por código de estado (ACT, MAN, FS, RET)"""
+        return self.db.query(Bus)\
+            .join(EstadoBus)\
+            .options(joinedload(Bus.estado), joinedload(Bus.tipo_combustible))\
+            .filter(and_(
+                EstadoBus.codigo == codigo_estado.upper(),
+                Bus.esta_activo == True
+            ))\
+            .all()
+
+    def find_by_marca(self, marca: str) -> List[Bus]:
+        """Buscar buses por marca"""
+        return self.db.query(Bus)\
+            .options(joinedload(Bus.estado), joinedload(Bus.tipo_combustible))\
+            .filter(and_(
+                Bus.marca.ilike(f"%{marca}%"),
+                Bus.esta_activo == True
+            ))\
+            .all()
+
+    def search(self, termino: str) -> List[Bus]:
+        """Búsqueda general por patente, marca, modelo o código interno"""
+        termino_like = f"%{termino}%"
+        return self.db.query(Bus)\
+            .options(joinedload(Bus.estado), joinedload(Bus.tipo_combustible))\
+            .filter(and_(
+                or_(
+                    Bus.patente.ilike(termino_like),
+                    Bus.marca.ilike(termino_like),
+                    Bus.modelo.ilike(termino_like),
+                    Bus.codigo_interno.ilike(termino_like)
+                ),
+                Bus.esta_activo == True
+            ))\
+            .all()
+
+    def create(self, bus_data: BusCrear) -> Bus:
+        """Crear nuevo bus con validación de foreign keys"""
+        # Validar que estado_id existe
+        estado = self.db.query(EstadoBus).filter(EstadoBus.id == bus_data.estado_id).first()
+        if not estado:
+            raise ValueError(f"Estado con ID {bus_data.estado_id} no existe")
+
+        # Validar que tipo_combustible_id existe
+        tipo_combustible = self.db.query(TipoCombustible).filter(
+            TipoCombustible.id == bus_data.tipo_combustible_id
+        ).first()
+        if not tipo_combustible:
+            raise ValueError(f"Tipo de combustible con ID {bus_data.tipo_combustible_id} no existe")
+
+        # Limpiar patente
+        patente_limpia = bus_data.patente.upper().replace('-', '').replace(' ', '')
+
+        # Crear objeto Bus
+        db_bus = Bus(
+            patente=patente_limpia,
+            codigo_interno=bus_data.codigo_interno,
+            marca=bus_data.marca,
+            modelo=bus_data.modelo,
+            año=bus_data.año,
+            numero_chasis=bus_data.numero_chasis,
+            numero_motor=bus_data.numero_motor,
+            tipo_combustible_id=bus_data.tipo_combustible_id,
+            estado_id=bus_data.estado_id,
+            capacidad_sentados=bus_data.capacidad_sentados,
+            kilometraje_actual=bus_data.kilometraje_actual or 0,
+            fecha_compra=bus_data.fecha_compra,
+            precio_compra=bus_data.precio_compra,
+            observaciones=bus_data.observaciones
+        )
+
+        self.db.add(db_bus)
+        self.db.commit()
+        self.db.refresh(db_bus)
         return db_bus
 
-    def obtener_bus_por_id(self, db: Session, bus_id: int) -> Optional[Bus]:
-        """
-        Obtener un bus por su ID
-        """
-        return db.query(Bus).filter(Bus.id == bus_id, Bus.esta_activo == True).first()
-
-    def obtener_bus_por_patente(self, db: Session, patente: str) -> Optional[Bus]:
-        """
-        Obtener un bus por su patente
-        """
-        return db.query(Bus).filter(Bus.patente == patente.upper(), Bus.esta_activo == True).first()
-
-    def obtener_buses(self, db: Session, skip: int = 0, limit: int = 100) -> List[Bus]:
-        """
-        Obtener lista de buses con paginación
-        """
-        return db.query(Bus).filter(Bus.esta_activo == True).offset(skip).limit(limit).all()
-
-    def obtener_buses_por_estado(self, db: Session, estado: str) -> List[Bus]:
-        """
-        Obtener buses filtrados por estado
-        """
-        return db.query(Bus).filter(Bus.estado == estado, Bus.esta_activo == True).all()
-
-    def obtener_buses_por_marca(self, db: Session, marca: str) -> List[Bus]:
-        """
-        Obtener buses filtrados por marca
-        """
-        return db.query(Bus).filter(Bus.marca.ilike(f"%{marca}%"), Bus.esta_activo == True).all()
-
-    def buscar_buses(self, db: Session, termino_busqueda: str) -> List[Bus]:
-        """
-        Buscar buses por patente, marca o modelo
-        """
-        return db.query(Bus).filter(
-            or_(
-                Bus.patente.ilike(f"%{termino_busqueda}%"),
-                Bus.marca.ilike(f"%{termino_busqueda}%"),
-                Bus.modelo.ilike(f"%{termino_busqueda}%")
-            ),
-            Bus.esta_activo == True
-        ).all()
-
-    def contar_buses(self, db: Session) -> int:
-        """
-        Contar total de buses activos
-        """
-        return db.query(Bus).filter(Bus.esta_activo == True).count()
-
-    def contar_buses_por_estado(self, db: Session, estado: str) -> int:
-        """
-        Contar buses por estado específico
-        """
-        return db.query(Bus).filter(Bus.estado == estado, Bus.esta_activo == True).count()
-
-    def actualizar_bus(self, db: Session, bus_id: int, bus_data: BusActualizar) -> Optional[Bus]:
-        """
-        Actualizar datos de un bus existente
-        """
-        # Obtener bus existente
-        db_bus = self.obtener_bus_por_id(db, bus_id)
+    def update(self, bus_id: int, bus_data: BusActualizar) -> Optional[Bus]:
+        """Actualizar bus existente"""
+        db_bus = self.find_by_id(bus_id)
         if not db_bus:
             return None
 
         # Actualizar solo campos que no son None
         update_data = bus_data.dict(exclude_unset=True)
+
+        # Validar foreign keys si se actualizan
+        if 'estado_id' in update_data:
+            estado = self.db.query(EstadoBus).filter(EstadoBus.id == update_data['estado_id']).first()
+            if not estado:
+                raise ValueError(f"Estado con ID {update_data['estado_id']} no existe")
+
+        if 'tipo_combustible_id' in update_data:
+            tipo_combustible = self.db.query(TipoCombustible).filter(
+                TipoCombustible.id == update_data['tipo_combustible_id']
+            ).first()
+            if not tipo_combustible:
+                raise ValueError(f"Tipo de combustible con ID {update_data['tipo_combustible_id']} no existe")
+
+        # Limpiar patente si se actualiza
+        if 'patente' in update_data and update_data['patente']:
+            update_data['patente'] = update_data['patente'].upper().replace('-', '').replace(' ', '')
+
         for field, value in update_data.items():
             setattr(db_bus, field, value)
 
-        # Guardar cambios
-        db.commit()
-        db.refresh(db_bus)
-        
+        self.db.commit()
+        self.db.refresh(db_bus)
         return db_bus
 
-    def actualizar_kilometraje(self, db: Session, bus_id: int, nuevo_kilometraje: int) -> Optional[Bus]:
-        """
-        Actualizar específicamente el kilometraje de un bus
-        """
-        db_bus = self.obtener_bus_por_id(db, bus_id)
-        if not db_bus:
-            return None
-
-        db_bus.kilometraje_actual = nuevo_kilometraje
-        db.commit()
-        db.refresh(db_bus)
-        
-        return db_bus
-
-    def cambiar_estado_bus(self, db: Session, bus_id: int, nuevo_estado: str) -> Optional[Bus]:
-        """
-        Cambiar el estado operacional de un bus
-        """
-        db_bus = self.obtener_bus_por_id(db, bus_id)
-        if not db_bus:
-            return None
-
-        db_bus.estado = nuevo_estado
-        db.commit()
-        db.refresh(db_bus)
-        
-        return db_bus
-
-    def eliminar_bus(self, db: Session, bus_id: int) -> bool:
-        """
-        Eliminar un bus (soft delete - marcar como inactivo)
-        """
-        db_bus = self.obtener_bus_por_id(db, bus_id)
+    def soft_delete(self, bus_id: int) -> bool:
+        """Eliminación lógica del bus"""
+        db_bus = self.find_by_id(bus_id)
         if not db_bus:
             return False
 
         db_bus.esta_activo = False
-        db.commit()
-        
+        self.db.commit()
         return True
 
-    def eliminar_bus_permanente(self, db: Session, bus_id: int) -> bool:
-        """
-        Eliminar un bus permanentemente de la base de datos
-        USAR CON PRECAUCIÓN
-        """
-        db_bus = db.query(Bus).filter(Bus.id == bus_id).first()
-        if not db_bus:
-            return False
+    def get_statistics(self) -> dict:
+        """Estadísticas de la flota"""
+        total_buses = self.db.query(Bus).filter(Bus.esta_activo == True).count()
 
-        db.delete(db_bus)
-        db.commit()
-        
-        return True
+        # Estadísticas por estado
+        estados_stats = self.db.query(EstadoBus.nombre, self.db.func.count(Bus.id))\
+            .join(Bus)\
+            .filter(Bus.esta_activo == True)\
+            .group_by(EstadoBus.nombre)\
+            .all()
 
-    def obtener_buses_mantenimiento_pendiente(self, db: Session, kilometraje_limite: int = 10000) -> List[Bus]:
-        """
-        Obtener buses que necesitan mantenimiento según kilometraje
-        """
-        buses = db.query(Bus).filter(Bus.esta_activo == True).all()
-        buses_mantenimiento = []
-        
-        for bus in buses:
-            if bus.necesita_mantenimiento(kilometraje_limite):
-                buses_mantenimiento.append(bus)
-        
-        return buses_mantenimiento
+        # Capacidad total
+        capacidad_total = self.db.query(self.db.func.sum(Bus.capacidad_sentados))\
+            .filter(Bus.esta_activo == True)\
+            .scalar() or 0
 
-    def obtener_estadisticas_flota(self, db: Session) -> dict:
-        """
-        Obtener estadísticas generales de la flota
-        """
-        total_buses = self.contar_buses(db)
-        activos = self.contar_buses_por_estado(db, "activo")
-        mantenimiento = self.contar_buses_por_estado(db, "mantenimiento")
-        fuera_servicio = self.contar_buses_por_estado(db, "fuera_de_servicio")
-        
+        # Kilometraje promedio
+        kilometraje_promedio = self.db.query(self.db.func.avg(Bus.kilometraje_actual))\
+            .filter(and_(Bus.esta_activo == True, Bus.kilometraje_actual.isnot(None)))\
+            .scalar() or 0
+
         return {
             "total_buses": total_buses,
-            "activos": activos,
-            "en_mantenimiento": mantenimiento,
-            "fuera_de_servicio": fuera_servicio,
-            "porcentaje_activos": round((activos / total_buses * 100) if total_buses > 0 else 0, 2)
+            "estados": dict(estados_stats),
+            "capacidad_total_flota": int(capacidad_total),
+            "kilometraje_promedio": round(float(kilometraje_promedio), 2)
         }
 
-# Instancia global para usar en los endpoints
+
+class CRUDBus:
+    """Wrapper para mantener compatibilidad con endpoints existentes"""
+
+    def __init__(self):
+        pass
+
+    def obtener_buses(self, db: Session, skip: int = 0, limit: int = 50) -> List[Bus]:
+        repo = BusRepository(db)
+        return repo.find_all_with_details(skip, limit)
+
+    def obtener_bus_por_id(self, db: Session, bus_id: int) -> Optional[Bus]:
+        repo = BusRepository(db)
+        return repo.find_by_id(bus_id)
+
+    def obtener_bus_por_patente(self, db: Session, patente: str) -> Optional[Bus]:
+        repo = BusRepository(db)
+        return repo.find_by_patente(patente)
+
+    def obtener_buses_por_estado(self, db: Session, estado: str) -> List[Bus]:
+        repo = BusRepository(db)
+        return repo.find_by_estado_codigo(estado)
+
+    def obtener_buses_por_marca(self, db: Session, marca: str) -> List[Bus]:
+        repo = BusRepository(db)
+        return repo.find_by_marca(marca)
+
+    def buscar_buses(self, db: Session, termino: str) -> List[Bus]:
+        repo = BusRepository(db)
+        return repo.search(termino)
+
+    def crear_bus(self, db: Session, bus_data: BusCrear) -> Bus:
+        repo = BusRepository(db)
+        return repo.create(bus_data)
+
+    def actualizar_bus(self, db: Session, bus_id: int, bus_data: BusActualizar) -> Optional[Bus]:
+        repo = BusRepository(db)
+        return repo.update(bus_id, bus_data)
+
+    def eliminar_bus(self, db: Session, bus_id: int) -> bool:
+        repo = BusRepository(db)
+        return repo.soft_delete(bus_id)
+
+    def obtener_estadisticas_flota(self, db: Session) -> dict:
+        repo = BusRepository(db)
+        return repo.get_statistics()
+
+
+# Instancia global para compatibilidad
 crud_bus = CRUDBus()
