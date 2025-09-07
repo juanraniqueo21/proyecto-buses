@@ -1,18 +1,55 @@
+
+# docker-compose.yml
 version: '3.8'
 
 services:
+  # Base de datos PostgreSQL
   postgres:
     image: postgres:15-alpine
     container_name: flota_postgres
     environment:
+      POSTGRES_DB: flota_buses
       POSTGRES_USER: grupo_trabajo
       POSTGRES_PASSWORD: grupo1234
-      POSTGRES_DB: flota_buses
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
     ports:
-      - "5433:5432"  # Puerto externo cambiado
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    restart: unless-stopped
+      - ./database/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U grupo_trabajo -d flota_buses"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - flota_network
+
+  # Backend API (opcional - para desarrollo automatizado)
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: flota_backend
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+
+    volumes:
+      - ./backend:/app
+    networks:
+      - flota_network
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 volumes:
   postgres_data:
+    driver: local
+
+networks:
+  flota_network:
+    driver: bridge
