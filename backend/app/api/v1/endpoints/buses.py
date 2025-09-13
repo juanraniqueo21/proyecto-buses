@@ -1,20 +1,20 @@
 """
-Router para endpoints de buses - Arquitectura limpia
+Router para endpoints de buses - Migrado a CRUD SQLAlchemy
 Sistema de Gestión de Flota de Buses
 """
 
-import os
 from typing import List, Optional
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Depends
+from sqlalchemy.orm import Session
 from pydantic import BaseModel
-import psycopg2
 
-# Configuración de base de datos
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = os.getenv("DB_PORT", "5433")
+# Imports del proyecto
+from app.core.dependencies import get_db
+from app.crud.buses import crud_bus
+from app.models.estados_tipos import EstadoBus, TipoCombustible
 
-# Schemas para el router
+# Schemas para el router (mantenemos los existentes)
 class BusBase(BaseModel):
     patente: str
     marca: str
@@ -52,49 +52,49 @@ class BusActualizar(BaseModel):
 # Crear router
 router = APIRouter()
 
-# Función helper para conexión a BD
-def get_db_connection():
-    """Obtener conexión a PostgreSQL"""
-    return psycopg2.connect(
-        host=DB_HOST, 
-        port=int(DB_PORT), 
-        database="flota_buses", 
-        user="grupo_trabajo",
-        password="grupo1234"
-    )
-
 # Función helper para formatear fecha
 def format_date(date_obj):
     """Formatear fecha para respuesta legible"""
     return date_obj.strftime("%d/%m/%Y") if date_obj else None
 
+def bus_to_dict(bus):
+    """Convertir modelo Bus a diccionario para respuesta"""
+    return {
+        "id": bus.id,
+        "patente": bus.patente,
+        "marca": bus.marca,
+        "modelo": bus.modelo,
+        "año": bus.año,
+        "estado": bus.estado.nombre if bus.estado else None,
+        "combustible": bus.tipo_combustible.nombre if bus.tipo_combustible else None,
+        "capacidad": bus.capacidad_sentados,
+        "kilometraje": bus.kilometraje_actual,
+        "precio": float(bus.precio_compra) if bus.precio_compra else None,
+        "observaciones": bus.observaciones,
+        "codigo_interno": bus.codigo_interno,
+        "numero_chasis": bus.numero_chasis,
+        "numero_motor": bus.numero_motor,
+        "fecha_compra": format_date(bus.fecha_compra)
+    }
+
 @router.get("/", summary="Listar todos los buses")
-def listar_buses():
-    """Obtener lista de todos los buses activos"""
+def listar_buses(db: Session = Depends(get_db)):
+    """Obtener lista de todos los buses activos usando CRUD SQLAlchemy"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT b.id, b.patente, b.marca, b.modelo, b.año, 
-                   e.nombre as estado, t.nombre as combustible, b.capacidad_sentados
-            FROM buses b 
-            JOIN estados_buses e ON b.estado_id = e.id 
-            JOIN tipos_combustible t ON b.tipo_combustible_id = t.id
-            WHERE b.esta_activo = true
-            ORDER BY b.id
-        """)
-        
-        buses = cursor.fetchall()
-        cursor.close()
-        conn.close()
+        buses = crud_bus.obtener_buses(db)
         
         buses_data = [
             {
-                "id": row[0], "patente": row[1], "marca": row[2], "modelo": row[3], 
-                "año": row[4], "estado": row[5], "combustible": row[6], "capacidad": row[7]
-            } 
-            for row in buses
+                "id": bus.id, 
+                "patente": bus.patente, 
+                "marca": bus.marca, 
+                "modelo": bus.modelo, 
+                "año": bus.año, 
+                "estado": bus.estado.nombre if bus.estado else "Sin estado",
+                "combustible": bus.tipo_combustible.nombre if bus.tipo_combustible else "Sin tipo",
+                "capacidad": bus.capacidad_sentados
+            }
+            for bus in buses
         ]
         
         return {"message": "Lista de buses", "total": len(buses_data), "buses": buses_data}
@@ -103,10 +103,10 @@ def listar_buses():
         raise HTTPException(status_code=500, detail=f"Error al obtener buses: {str(e)}")
 
 @router.post("/", status_code=status.HTTP_201_CREATED, summary="Crear nuevo bus")
-def crear_bus(bus_data: BusCrear):
-    """Crear un nuevo bus con validaciones completas"""
+def crear_bus(bus_data: BusCrear, db: Session = Depends(get_db)):
+    """Crear un nuevo bus usando CRUD SQLAlchemy"""
     try:
-        # Validaciones de entrada
+        # Validaciones de entrada (mantenemos las originales)
         patente = bus_data.patente.upper().replace('-', '').replace(' ', '')
         if len(patente) < 6 or len(patente) > 8:
             raise HTTPException(status_code=400, detail="Patente debe tener entre 6 y 8 caracteres")
@@ -118,111 +118,46 @@ def crear_bus(bus_data: BusCrear):
         if bus_data.capacidad_sentados < 1 or bus_data.capacidad_sentados > 45:
             raise HTTPException(status_code=400, detail="Capacidad debe estar entre 1 y 45 asientos")
         
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # Verificar patente única
-        cursor.execute("SELECT id FROM buses WHERE patente = %s", (patente,))
-        if cursor.fetchone():
-            cursor.close()
-            conn.close()
+        # Verificar patente única usando CRUD
+        bus_existente = crud_bus.obtener_bus_por_patente(db, patente)
+        if bus_existente:
             raise HTTPException(status_code=400, detail=f"Ya existe un bus con patente {patente}")
         
-        # Verificar foreign keys
-        cursor.execute("SELECT id FROM estados_buses WHERE id = %s", (bus_data.estado_id,))
-        if not cursor.fetchone():
-            cursor.close()
-            conn.close()
-            raise HTTPException(status_code=400, detail=f"Estado con ID {bus_data.estado_id} no existe")
-        
-        cursor.execute("SELECT id FROM tipos_combustible WHERE id = %s", (bus_data.tipo_combustible_id,))
-        if not cursor.fetchone():
-            cursor.close()
-            conn.close()
-            raise HTTPException(status_code=400, detail=f"Tipo de combustible con ID {bus_data.tipo_combustible_id} no existe")
-        
-        # Insertar bus
-        insert_query = """
-        INSERT INTO buses (
-            patente, codigo_interno, marca, modelo, año, numero_chasis, numero_motor,
-            tipo_combustible_id, estado_id, capacidad_sentados, kilometraje_actual,
-            fecha_compra, precio_compra, observaciones
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
-        """
-        
-        cursor.execute(insert_query, (
-            patente, bus_data.codigo_interno, bus_data.marca, bus_data.modelo,
-            bus_data.año, bus_data.numero_chasis, bus_data.numero_motor,
-            bus_data.tipo_combustible_id, bus_data.estado_id, bus_data.capacidad_sentados,
-            bus_data.kilometraje_actual, bus_data.fecha_compra, bus_data.precio_compra,
-            bus_data.observaciones
-        ))
-        
-        bus_id = cursor.fetchone()[0]
-        conn.commit()
-        
-        # Obtener bus creado con información completa
-        cursor.execute("""
-            SELECT b.id, b.patente, b.marca, b.modelo, b.año, 
-                   e.nombre as estado, t.nombre as combustible, b.capacidad_sentados,
-                   b.kilometraje_actual, b.precio_compra, b.observaciones, b.fecha_compra
-            FROM buses b 
-            JOIN estados_buses e ON b.estado_id = e.id 
-            JOIN tipos_combustible t ON b.tipo_combustible_id = t.id
-            WHERE b.id = %s
-        """, (bus_id,))
-        
-        bus_creado = cursor.fetchone()
-        cursor.close()
-        conn.close()
+        # Crear bus usando CRUD
+        nuevo_bus = crud_bus.crear_bus(db, bus_data)
         
         return {
             "message": "Bus creado exitosamente",
-            "bus": {
-                "id": bus_creado[0], "patente": bus_creado[1], "marca": bus_creado[2],
-                "modelo": bus_creado[3], "año": bus_creado[4], "estado": bus_creado[5],
-                "combustible": bus_creado[6], "capacidad": bus_creado[7],
-                "kilometraje": bus_creado[8], 
-                "precio": float(bus_creado[9]) if bus_creado[9] else None,
-                "observaciones": bus_creado[10],
-                "fecha_compra": format_date(bus_creado[11])
-            }
+            "bus": bus_to_dict(nuevo_bus)
         }
         
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
 
 @router.get("/eliminados", summary="Listar buses eliminados")
-def listar_buses_eliminados():
+def listar_buses_eliminados(db: Session = Depends(get_db)):
     """Obtener lista de buses eliminados lógicamente"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT b.id, b.patente, b.marca, b.modelo, b.año,
-                   e.nombre as estado, t.nombre as combustible, 
-                   b.fecha_actualizacion as fecha_eliminacion
-            FROM buses b 
-            LEFT JOIN estados_buses e ON b.estado_id = e.id 
-            LEFT JOIN tipos_combustible t ON b.tipo_combustible_id = t.id
-            WHERE b.esta_activo = false
-            ORDER BY b.fecha_actualizacion DESC
-        """)
-        
-        buses = cursor.fetchall()
-        cursor.close()
-        conn.close()
+        # Como no hay método específico en CRUD, usamos consulta directa
+        from app.models.buses import Bus
+        buses = db.query(Bus).filter(Bus.esta_activo == False).all()
         
         buses_eliminados = [
             {
-                "id": row[0], "patente": row[1], "marca": row[2], "modelo": row[3], 
-                "año": row[4], "estado": row[5], "combustible": row[6],
-                "fecha_eliminacion": format_date(row[7]) if row[7] else None
+                "id": bus.id,
+                "patente": bus.patente, 
+                "marca": bus.marca, 
+                "modelo": bus.modelo, 
+                "año": bus.año,
+                "estado": bus.estado.nombre if bus.estado else None,
+                "combustible": bus.tipo_combustible.nombre if bus.tipo_combustible else None,
+                "fecha_eliminacion": format_date(bus.fecha_actualizacion) if bus.fecha_actualizacion else None
             } 
-            for row in buses
+            for bus in buses
         ]
         
         return {
@@ -233,43 +168,17 @@ def listar_buses_eliminados():
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
-    
 
 @router.get("/{bus_id}", summary="Obtener bus por ID")
-def obtener_bus(bus_id: int):
-    """Obtener información detallada de un bus específico"""
+def obtener_bus(bus_id: int, db: Session = Depends(get_db)):
+    """Obtener información detallada de un bus específico usando CRUD"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT b.id, b.patente, b.marca, b.modelo, b.año, 
-                   e.nombre as estado, t.nombre as combustible, b.capacidad_sentados,
-                   b.kilometraje_actual, b.precio_compra, b.observaciones, b.codigo_interno,
-                   b.numero_chasis, b.numero_motor, b.fecha_compra
-            FROM buses b 
-            JOIN estados_buses e ON b.estado_id = e.id 
-            JOIN tipos_combustible t ON b.tipo_combustible_id = t.id
-            WHERE b.id = %s AND b.esta_activo = true
-        """, (bus_id,))
-        
-        bus = cursor.fetchone()
-        cursor.close()
-        conn.close()
+        bus = crud_bus.obtener_bus_por_id(db, bus_id)
         
         if not bus:
             raise HTTPException(status_code=404, detail="Bus no encontrado")
             
-        return {
-            "bus": {
-                "id": bus[0], "patente": bus[1], "marca": bus[2], "modelo": bus[3],
-                "año": bus[4], "estado": bus[5], "combustible": bus[6], "capacidad": bus[7],
-                "kilometraje": bus[8], "precio": float(bus[9]) if bus[9] else None,
-                "observaciones": bus[10], "codigo_interno": bus[11],
-                "numero_chasis": bus[12], "numero_motor": bus[13], 
-                "fecha_compra": format_date(bus[14])
-            }
-        }
+        return {"bus": bus_to_dict(bus)}
         
     except HTTPException:
         raise
@@ -277,124 +186,63 @@ def obtener_bus(bus_id: int):
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
 
 @router.put("/{bus_id}", summary="Actualizar bus")
-def actualizar_bus(bus_id: int, bus_data: BusActualizar):
-    """Actualizar información de un bus existente"""
+def actualizar_bus(bus_id: int, bus_data: BusActualizar, db: Session = Depends(get_db)):
+    """Actualizar información de un bus existente usando CRUD"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
         # Verificar que el bus existe
-        cursor.execute("SELECT id FROM buses WHERE id = %s AND esta_activo = true", (bus_id,))
-        if not cursor.fetchone():
-            cursor.close()
-            conn.close()
+        bus_existente = crud_bus.obtener_bus_por_id(db, bus_id)
+        if not bus_existente:
             raise HTTPException(status_code=404, detail="Bus no encontrado")
         
-        # Construir query dinámico
-        campos_actualizar = []
-        valores = []
-        
-        if bus_data.patente is not None:
+        # Validar patente si se actualiza
+        if bus_data.patente:
             patente_limpia = bus_data.patente.upper().replace('-', '').replace(' ', '')
             if len(patente_limpia) < 6 or len(patente_limpia) > 8:
-                cursor.close()
-                conn.close()
                 raise HTTPException(status_code=400, detail="Patente debe tener entre 6 y 8 caracteres")
             
             # Verificar patente única
-            cursor.execute("SELECT id FROM buses WHERE patente = %s AND id != %s", (patente_limpia, bus_id))
-            if cursor.fetchone():
-                cursor.close()
-                conn.close()
+            otro_bus = crud_bus.obtener_bus_por_patente(db, patente_limpia)
+            if otro_bus and otro_bus.id != bus_id:
                 raise HTTPException(status_code=400, detail="La patente ya está en uso por otro bus")
-            
-            campos_actualizar.append("patente = %s")
-            valores.append(patente_limpia)
         
-        # Agregar otros campos de actualización dinámicamente
-        for field, value in bus_data.dict(exclude_unset=True).items():
-            if field != 'patente' and value is not None:
-                campos_actualizar.append(f"{field} = %s")
-                valores.append(value)
-        
-        if not campos_actualizar:
-            cursor.close()
-            conn.close()
-            raise HTTPException(status_code=400, detail="No se proporcionaron campos para actualizar")
-        
-        # Ejecutar actualización
-        campos_actualizar.append("fecha_actualizacion = NOW()")
-        update_query = f"UPDATE buses SET {', '.join(campos_actualizar)} WHERE id = %s"
-        valores.append(bus_id)
-        
-        cursor.execute(update_query, valores)
-        conn.commit()
-        
-        # Obtener bus actualizado
-        cursor.execute("""
-            SELECT b.id, b.patente, b.marca, b.modelo, b.año, 
-                   e.nombre as estado, t.nombre as combustible, b.capacidad_sentados,
-                   b.kilometraje_actual, b.precio_compra, b.observaciones
-            FROM buses b 
-            JOIN estados_buses e ON b.estado_id = e.id 
-            JOIN tipos_combustible t ON b.tipo_combustible_id = t.id
-            WHERE b.id = %s
-        """, (bus_id,))
-        
-        bus_actualizado = cursor.fetchone()
-        cursor.close()
-        conn.close()
+        # Actualizar usando CRUD
+        bus_actualizado = crud_bus.actualizar_bus(db, bus_id, bus_data)
+        if not bus_actualizado:
+            raise HTTPException(status_code=404, detail="Error al actualizar el bus")
         
         return {
             "message": "Bus actualizado exitosamente",
-            "bus": {
-                "id": bus_actualizado[0], "patente": bus_actualizado[1], "marca": bus_actualizado[2], 
-                "modelo": bus_actualizado[3], "año": bus_actualizado[4], "estado": bus_actualizado[5], 
-                "combustible": bus_actualizado[6], "capacidad": bus_actualizado[7],
-                "kilometraje": bus_actualizado[8], 
-                "precio": float(bus_actualizado[9]) if bus_actualizado[9] else None,
-                "observaciones": bus_actualizado[10]
-            }
+            "bus": bus_to_dict(bus_actualizado)
         }
         
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
 
 @router.delete("/{bus_id}", summary="Eliminar bus")
-def eliminar_bus(bus_id: int):
-    """Eliminar un bus (soft delete)"""
+def eliminar_bus(bus_id: int, db: Session = Depends(get_db)):
+    """Eliminar un bus usando CRUD SQLAlchemy (soft delete)"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # Verificar que el bus existe
-        cursor.execute("""
-            SELECT b.id, b.patente, b.marca, b.modelo 
-            FROM buses b WHERE b.id = %s AND b.esta_activo = true
-        """, (bus_id,))
-        
-        bus = cursor.fetchone()
+        # Obtener información del bus antes de eliminar
+        bus = crud_bus.obtener_bus_por_id(db, bus_id)
         if not bus:
-            cursor.close()
-            conn.close()
             raise HTTPException(status_code=404, detail="Bus no encontrado")
         
-        # Eliminar lógicamente
-        cursor.execute("""
-            UPDATE buses SET esta_activo = false, fecha_actualizacion = NOW() 
-            WHERE id = %s
-        """, (bus_id,))
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
+        # Eliminar usando CRUD
+        resultado = crud_bus.eliminar_bus(db, bus_id)
+        if not resultado:
+            raise HTTPException(status_code=404, detail="Error al eliminar el bus")
         
         return {
             "message": "Bus eliminado exitosamente",
             "bus_eliminado": {
-                "id": bus[0], "patente": bus[1], "marca": bus[2], "modelo": bus[3]
+                "id": bus.id,
+                "patente": bus.patente,
+                "marca": bus.marca,
+                "modelo": bus.modelo
             }
         }
         
@@ -403,28 +251,48 @@ def eliminar_bus(bus_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
 
-# Endpoints auxiliares
-@router.get("/auxiliares/estados", summary="Obtener estados disponibles")
-def obtener_estados():
-    """Obtener lista de estados de buses disponibles"""
+@router.patch("/{bus_id}/restaurar", summary="Restaurar bus eliminado")
+def restaurar_bus(bus_id: int, db: Session = Depends(get_db)):
+    """Restaurar un bus eliminado lógicamente"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        # Como no hay método específico en CRUD, usamos consulta directa
+        from app.models.buses import Bus
+        bus = db.query(Bus).filter(Bus.id == bus_id, Bus.esta_activo == False).first()
         
-        cursor.execute("""
-            SELECT id, codigo, nombre, descripcion 
-            FROM estados_buses WHERE es_activo = true 
-            ORDER BY nombre
-        """)
+        if not bus:
+            raise HTTPException(status_code=404, detail="Bus no encontrado o no está eliminado")
         
-        estados = cursor.fetchall()
-        cursor.close()
-        conn.close()
+        # Restaurar el bus
+        bus.esta_activo = True
+        db.commit()
+        db.refresh(bus)
+        
+        return {
+            "message": "Bus restaurado exitosamente",
+            "bus_restaurado": {
+                "id": bus.id,
+                "patente": bus.patente,
+                "marca": bus.marca,
+                "modelo": bus.modelo
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+
+# Endpoints auxiliares usando SQLAlchemy
+@router.get("/auxiliares/estados", summary="Obtener estados disponibles")
+def obtener_estados(db: Session = Depends(get_db)):
+    """Obtener lista de estados de buses disponibles usando SQLAlchemy"""
+    try:
+        estados = db.query(EstadoBus).filter(EstadoBus.es_activo == True).all()
         
         return {
             "estados": [
-                {"id": row[0], "codigo": row[1], "nombre": row[2], "descripcion": row[3]}
-                for row in estados
+                {"id": estado.id, "codigo": estado.codigo, "nombre": estado.nombre, "descripcion": estado.descripcion}
+                for estado in estados
             ]
         }
         
@@ -432,123 +300,38 @@ def obtener_estados():
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
 
 @router.get("/auxiliares/combustibles", summary="Obtener tipos de combustible")
-def obtener_tipos_combustible():
-    """Obtener lista de tipos de combustible disponibles"""
+def obtener_tipos_combustible(db: Session = Depends(get_db)):
+    """Obtener lista de tipos de combustible disponibles usando SQLAlchemy"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT id, codigo, nombre, factor_emision 
-            FROM tipos_combustible WHERE es_activo = true 
-            ORDER BY nombre
-        """)
-        
-        tipos = cursor.fetchall()
-        cursor.close()
-        conn.close()
+        tipos = db.query(TipoCombustible).filter(TipoCombustible.es_activo == True).all()
         
         return {
             "tipos_combustible": [
-                {"id": row[0], "codigo": row[1], "nombre": row[2], 
-                 "factor_emision": float(row[3]) if row[3] else None}
-                for row in tipos
+                {"id": tipo.id, "codigo": tipo.codigo, "nombre": tipo.nombre, 
+                 "factor_emision": float(tipo.factor_emision) if tipo.factor_emision else None}
+                for tipo in tipos
             ]
         }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
 
-@router.patch("/{bus_id}/restaurar", summary="Restaurar bus eliminado")
-def restaurar_bus(bus_id: int):
-    """Restaurar un bus eliminado lógicamente"""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # Verificar que el bus existe y está inactivo
-        cursor.execute("""
-            SELECT b.id, b.patente, b.marca, b.modelo 
-            FROM buses b 
-            WHERE b.id = %s AND b.esta_activo = false
-        """, (bus_id,))
-        
-        bus = cursor.fetchone()
-        if not bus:
-            cursor.close()
-            conn.close()
-            raise HTTPException(status_code=404, detail="Bus no encontrado o no está eliminado")
-        
-        # Restaurar el bus
-        cursor.execute("""
-            UPDATE buses 
-            SET esta_activo = true, fecha_actualizacion = NOW() 
-            WHERE id = %s
-        """, (bus_id,))
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
-        return {
-            "message": "Bus restaurado exitosamente",
-            "bus_restaurado": {
-                "id": bus[0],
-                "patente": bus[1],
-                "marca": bus[2],
-                "modelo": bus[3]
-            }
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
-
-
-
 @router.get("/reportes/estadisticas", summary="Estadísticas de la flota")
-def obtener_estadisticas():
-    """Obtener estadísticas generales de la flota de buses"""
+def obtener_estadisticas(db: Session = Depends(get_db)):
+    """Obtener estadísticas generales de la flota usando CRUD"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        estadisticas = crud_bus.obtener_estadisticas_flota(db)
         
-        # Total de buses
-        cursor.execute("SELECT COUNT(*) FROM buses WHERE esta_activo = true")
-        total_buses = cursor.fetchone()[0]
+        # Agregar datos adicionales manualmente
+        from app.models.buses import Bus
+        total_eliminados = db.query(Bus).filter(Bus.esta_activo == False).count()
         
-        # Buses por estado
-        cursor.execute("""
-            SELECT e.nombre, COUNT(b.id) 
-            FROM estados_buses e 
-            LEFT JOIN buses b ON e.id = b.estado_id AND b.esta_activo = true
-            GROUP BY e.id, e.nombre
-            ORDER BY e.nombre
-        """)
-        estados_stats = dict(cursor.fetchall())
-        
-        # Capacidad total
-        cursor.execute("""
-            SELECT COALESCE(SUM(capacidad_sentados), 0) 
-            FROM buses WHERE esta_activo = true
-        """)
-        capacidad_total = cursor.fetchone()[0]
-        
-        # Total eliminados
-        cursor.execute("SELECT COUNT(*) FROM buses WHERE esta_activo = false")
-        total_eliminados = cursor.fetchone()[0]
-        
-        cursor.close()
-        conn.close()
-        
-        return {
-            "total_buses": total_buses,
+        estadisticas.update({
             "total_eliminados": total_eliminados,
-            "por_estado": estados_stats,
-            "capacidad_total_flota": capacidad_total,
             "fecha_consulta": datetime.now().strftime("%d/%m/%Y %H:%M")
-        }
+        })
+        
+        return estadisticas
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")

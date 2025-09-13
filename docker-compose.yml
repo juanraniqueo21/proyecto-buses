@@ -1,4 +1,3 @@
-
 # docker-compose.yml
 version: '3.8'
 
@@ -27,7 +26,7 @@ services:
 
   # Backend API (opcional - para desarrollo automatizado)
   backend:
-    build: 
+    build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: flota_backend
@@ -39,7 +38,9 @@ services:
     environment:
       - DB_HOST=postgres
       - DB_PORT=5432
-
+      - DB_NAME=flota_buses
+      - DB_USER=grupo_trabajo
+      - DB_PASSWORD=grupo1234
     volumes:
       - ./backend:/app
     networks:

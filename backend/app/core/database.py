@@ -4,24 +4,21 @@ Sistema de Gestión de Flota de Buses
 """
 
 import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
-# URL de la base de datos desde variable de entorno o por defecto para desarrollo
-URL_BASE_DATOS = os.getenv(
-    "DATABASE_URL", 
-    "postgresql://grupo_trabajo:grupo1234@localhost:5433/flota_buses"
-)
+# Obtener configuración de base de datos desde variables de entorno
+DB_HOST = os.getenv("DB_HOST", "postgres")
+DB_PORT = os.getenv("DB_PORT", "5432")
+DB_NAME = os.getenv("DB_NAME", "flota_buses")
+DB_USER = os.getenv("DB_USER", "grupo_trabajo")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "grupo1234")
 
+# Construir URL de la base de datos
+URL_BASE_DATOS = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-motor_bd = create_engine(
-    URL_BASE_DATOS,
-    echo=True,
-    pool_pre_ping=True,
-    pool_recycle=300
-)
+print(f"🗄️ Conectando a: postgresql://{DB_USER}:***@{DB_HOST}:{DB_PORT}/{DB_NAME}")
 
 # Crear motor de SQLAlchemy
 motor_bd = create_engine(
@@ -52,13 +49,14 @@ def obtener_bd():
 
 # Función de inicialización de base de datos
 def inicializar_bd():
-    """
-    Inicializar tablas de la base de datos
-    Se llama al inicio de la aplicación
-    """
-    # Importar todos los modelos aquí para asegurar que están registrados con SQLAlchemy
-    # Esto será necesario cuando creemos los modelos
-    Base.metadata.create_all(bind=motor_bd)
+    """Inicializar tablas de la base de datos"""
+    try:
+        from models.buses import Bus  # Sin 'app.'
+        from models.estados_tipos import EstadoBus, TipoCombustible  # Sin 'app.'
+        Base.metadata.create_all(bind=motor_bd)
+        print("✅ Tablas de base de datos inicializadas correctamente")
+    except Exception as e:
+        print(f"❌ Error inicializando tablas: {e}")
 
 # Función de verificación de estado de la base de datos
 def verificar_conexion_bd():
@@ -68,16 +66,10 @@ def verificar_conexion_bd():
     """
     try:
         bd = SesionLocal()
-        from sqlalchemy import text
         bd.execute(text("SELECT 1"))
         bd.close()
+        print("✅ Conexión a base de datos exitosa")
         return True
     except Exception as e:
-        print(f"Conexión a base de datos falló: {e}")
+        print(f"❌ Conexión a base de datos falló: {e}")
         return False
-    
-def inicializar_bd():
-    """Inicializar tablas de la base de datos"""
-    from models.buses import Bus  # Sin 'app.'
-    from models.estados_tipos import EstadoBus, TipoCombustible  # Sin 'app.'
-    Base.metadata.create_all(bind=motor_bd)
